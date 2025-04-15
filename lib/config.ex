@@ -12,7 +12,7 @@ defmodule LangChain.Config do
   def resolve(key, default \\ nil)
 
   def resolve(key, default) when is_atom(key) do
-    Application.get_env(:langchain, key, default)
+    get_env(key, default)
     |> expand_value()
   end
 
@@ -21,6 +21,10 @@ defmodule LangChain.Config do
       ArgumentError,
       message: "#{__MODULE__} expected key '#{key}' to be an atom"
     )
+  end
+
+  def get_env(key, default) do
+    Application.get_env(:langchain, key, default)
   end
 
   defp expand_value({module, function, args})
