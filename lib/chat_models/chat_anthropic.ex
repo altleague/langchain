@@ -405,19 +405,26 @@ defmodule LangChain.ChatModels.ChatAnthropic do
         {:error, LangChainError.exception(type: "overloaded", message: "Overloaded")}
 
       {:ok, %Req.Response{status: 429} = response} ->
+        {:error, LangChainError.rate_limit_exceeded(response)}
+
+      {:error, %Req.Response{body: %{message: message}} = response} ->
         {:error,
          LangChainError.exception(
-           type: "rate_limit_exceeded",
-           message: "Service rate limits are exceeded",
+           type: "unexpected_response",
+           message: message,
            original: response
          )}
 
-      {:error, %Req.Response{body: %{message: message}}} = error ->
+      {:error, %Req.Response{body: %{message: message}} = response} ->
         {:error,
-         LangChainError.exception(type: "unexpected_response", message: message, original: error)}
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
 
-      {:error, %Req.Response{}} = error ->
-        {:error, LangChainError.exception(type: "unexpected_response", original: error)}
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
 
       {:error, %Req.TransportError{reason: :timeout} = err} ->
         {:error,

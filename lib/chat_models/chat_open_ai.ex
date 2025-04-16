@@ -706,19 +706,24 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         Logger.debug(fn -> "Mint connection closed: retry count = #{inspect(retry_count)}" end)
         do_api_request(openai, messages, tools, retry_count - 1)
 
-      {:error, %Req.Response{body: %{"message" => message}}} = error ->
-        {:error, LangChainError.exception(type: "unexpected_response", message: message, original: error)}
-
-      {:error, %Req.Response{body: %{"error" => %{"message" => message}}}} = error ->
+      {:error, %Req.Response{body: %{"message" => message}} = response} ->
         {:error,
          LangChainError.exception(
            type: "unexpected_response",
            message: message,
-           original: error
+           original: response
          )}
 
-      {:error, %Req.Response{}} = error ->
-        {:error, LangChainError.exception(type: "unexpected_response", original: error)}
+      {:error, %Req.Response{body: %{"error" => %{"message" => message}}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
 
       other ->
         Logger.error("Unexpected and unhandled API response! #{inspect(other)}")
