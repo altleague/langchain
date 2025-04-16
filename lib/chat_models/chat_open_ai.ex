@@ -710,14 +710,15 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         LangChainError.exception(type: "unexpected_response", message: message, original: error)
 
       {:error, %Req.Response{body: %{"error" => %{"message" => message}}}} = error ->
-        LangChainError.exception(
-          type: "unexpected_response",
-          message: message,
-          original: error
-        )
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: error
+         )}
 
       {:error, %Req.Response{}} = error ->
-        LangChainError.exception(type: "unexpected_response", original: error)
+        {:error, LangChainError.exception(type: "unexpected_response", original: error)}
 
       other ->
         Logger.error("Unexpected and unhandled API response! #{inspect(other)}")

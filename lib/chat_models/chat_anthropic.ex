@@ -413,10 +413,11 @@ defmodule LangChain.ChatModels.ChatAnthropic do
          )}
 
       {:error, %Req.Response{body: %{message: message}}} = error ->
-        LangChainError.exception(type: "unexpected_response", message: message, original: error)
+        {:error,
+         LangChainError.exception(type: "unexpected_response", message: message, original: error)}
 
       {:error, %Req.Response{}} = error ->
-        LangChainError.exception(type: "unexpected_response", original: error)
+        {:error, LangChainError.exception(type: "unexpected_response", original: error)}
 
       {:error, %Req.TransportError{reason: :timeout} = err} ->
         {:error,
