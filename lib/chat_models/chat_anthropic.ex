@@ -366,19 +366,18 @@ defmodule LangChain.ChatModels.ChatAnthropic do
         tools,
         retry_count
       ) do
-    config_req_opts = Config.get_env(:req_opt, [])
-
     req =
       Req.new(
         url: url(anthropic),
         json: for_api(anthropic, messages, tools),
         headers: headers(anthropic),
         receive_timeout: anthropic.receive_timeout,
-        retry: Keyword.get(config_req_opts, :retry, :transient),
-        max_retries: Keyword.get(config_req_opts, :max_retries, retry_count),
-        retry_delay: Keyword.get(config_req_opts, :retry_delay, &req_default_retry/1),
+        retry: :transient,
+        max_retries: 3,
+        retry_delay: fn attempt -> 300 * attempt end,
         aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post()
@@ -438,6 +437,7 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       receive_timeout: anthropic.receive_timeout,
       aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
     )
+    |> Req.merge(Config.get_env(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(
@@ -477,10 +477,6 @@ defmodule LangChain.ChatModels.ChatAnthropic do
         Logger.error(message)
         {:error, LangChainError.exception(type: "unexpected_response", message: message)}
     end
-  end
-
-  defp req_default_retry(attempt) do
-    300 * attempt
   end
 
   defp aws_sigv4_opts(nil), do: nil

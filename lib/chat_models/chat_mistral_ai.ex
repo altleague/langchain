@@ -307,6 +307,7 @@ defmodule LangChain.ChatModels.ChatMistralAI do
         max_retries: 3,
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post()
@@ -357,6 +358,7 @@ defmodule LangChain.ChatModels.ChatMistralAI do
         ],
         receive_timeout: mistralai.receive_timeout
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post(

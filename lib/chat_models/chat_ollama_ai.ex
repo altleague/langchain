@@ -49,6 +49,7 @@ defmodule LangChain.ChatModels.ChatOllamaAI do
   alias LangChain.FunctionParam
   alias LangChain.LangChainError
   alias LangChain.Utils
+  alias LangChain.Config
 
   @behaviour ChatModel
 
@@ -402,6 +403,7 @@ defmodule LangChain.ChatModels.ChatOllamaAI do
         inet6: true,
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post()
@@ -441,6 +443,7 @@ defmodule LangChain.ChatModels.ChatOllamaAI do
       inet6: true,
       receive_timeout: ollama_ai.receive_timeout
     )
+    |> Req.merge(Config.get_env(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(

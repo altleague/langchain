@@ -237,6 +237,7 @@ defmodule LangChain.Images.OpenAIImage do
         max_retries: 3,
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> maybe_add_org_id_header()

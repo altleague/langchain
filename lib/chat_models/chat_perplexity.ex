@@ -337,6 +337,7 @@ defmodule LangChain.ChatModels.ChatPerplexity do
         auth: {:bearer, get_api_key(perplexity)},
         receive_timeout: perplexity.receive_timeout
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post()
@@ -382,6 +383,7 @@ defmodule LangChain.ChatModels.ChatPerplexity do
       auth: {:bearer, get_api_key(perplexity)},
       receive_timeout: perplexity.receive_timeout
     )
+    |> Req.merge(Config.get_env(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(

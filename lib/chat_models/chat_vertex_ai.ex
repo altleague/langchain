@@ -301,6 +301,7 @@ defmodule LangChain.ChatModels.ChatVertexAI do
         auth: {:bearer, get_api_key(vertex_ai)},
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.get_env(:req_opts, []))
 
     req
     |> Req.post()
@@ -332,6 +333,7 @@ defmodule LangChain.ChatModels.ChatVertexAI do
       auth: {:bearer, get_api_key(vertex_ai)},
       receive_timeout: vertex_ai.receive_timeout
     )
+    |> Req.merge(Config.get_env(:req_opts, []))
     |> Req.Request.put_header("accept-encoding", "utf-8")
     |> Req.post(
       into:

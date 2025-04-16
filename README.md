@@ -128,14 +128,13 @@ A list of models to use:
 - [OpenAI models on Azure](https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models)
 - [Gemini AI models](https://ai.google.dev/gemini-api/docs/models/gemini)
 
-Controlling Http API retries can be done via the following [Req config](https://hexdocs.pm/req/Req.Steps.html#retry/1-request-options):
+Add `:req_opts` to LangChain's configuration to override [Req's config](https://hexdocs.pm/req/readme.html#configuration):
 
 ```elixir
 config :langchain,
   req_opts: [
     retry: :transient,
     max_retries: 3,
-    retry_delay: fn attempt -> 300 * attempt end
   ]
 ```
 
