@@ -403,7 +403,7 @@ defmodule LangChain.ChatModels.ChatOllamaAI do
         inet6: true,
         retry_delay: fn attempt -> 300 * attempt end
       )
-      |> Req.merge(Config.get_env(:req_opts, []))
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> Req.post()
@@ -443,7 +443,7 @@ defmodule LangChain.ChatModels.ChatOllamaAI do
       inet6: true,
       receive_timeout: ollama_ai.receive_timeout
     )
-    |> Req.merge(Config.get_env(:req_opts, []))
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(

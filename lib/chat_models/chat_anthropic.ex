@@ -377,7 +377,7 @@ defmodule LangChain.ChatModels.ChatAnthropic do
         retry_delay: fn attempt -> 300 * attempt end,
         aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
       )
-      |> Req.merge(Config.get_env(:req_opts, []))
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> Req.post()
@@ -437,7 +437,7 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       receive_timeout: anthropic.receive_timeout,
       aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
     )
-    |> Req.merge(Config.get_env(:req_opts, []))
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(

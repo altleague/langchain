@@ -667,7 +667,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         max_retries: 3,
         retry_delay: fn attempt -> 300 * attempt end
       )
-      |> Req.merge(Config.get_env(:req_opts, []))
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> maybe_add_org_id_header()
@@ -729,7 +729,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
       ],
       receive_timeout: openai.receive_timeout
     )
-    |> Req.merge(Config.get_env(:req_opts, []))
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> maybe_add_org_id_header()
     |> maybe_add_proj_id_header()
     |> Req.post(
