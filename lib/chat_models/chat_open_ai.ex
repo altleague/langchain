@@ -707,7 +707,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         do_api_request(openai, messages, tools, retry_count - 1)
 
       {:error, %Req.Response{body: %{"message" => message}}} = error ->
-        LangChainError.exception(type: "unexpected_response", message: message, original: error)
+        {:error, LangChainError.exception(type: "unexpected_response", message: message, original: error)}
 
       {:error, %Req.Response{body: %{"error" => %{"message" => message}}}} = error ->
         {:error,
