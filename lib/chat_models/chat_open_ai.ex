@@ -667,6 +667,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         max_retries: 3,
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> maybe_add_org_id_header()
@@ -705,6 +706,25 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         Logger.debug(fn -> "Mint connection closed: retry count = #{inspect(retry_count)}" end)
         do_api_request(openai, messages, tools, retry_count - 1)
 
+      {:error, %Req.Response{body: %{"message" => message}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{body: %{"error" => %{"message" => message}}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
+
       other ->
         Logger.error("Unexpected and unhandled API response! #{inspect(other)}")
         other
@@ -728,6 +748,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
       ],
       receive_timeout: openai.receive_timeout
     )
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> maybe_add_org_id_header()
     |> maybe_add_proj_id_header()
     |> Req.post(

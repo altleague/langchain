@@ -458,6 +458,7 @@ defmodule LangChain.ChatModels.ChatGoogleAI do
         max_retries: 3,
         retry_delay: fn attempt -> 300 * attempt end
       )
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> Req.post()
@@ -495,6 +496,7 @@ defmodule LangChain.ChatModels.ChatGoogleAI do
       json: for_api(google_ai, messages, tools),
       receive_timeout: google_ai.receive_timeout
     )
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> Req.Request.put_header("accept-encoding", "utf-8")
     |> Req.post(
       into:

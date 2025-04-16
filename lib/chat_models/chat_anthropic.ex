@@ -377,6 +377,7 @@ defmodule LangChain.ChatModels.ChatAnthropic do
         retry_delay: fn attempt -> 300 * attempt end,
         aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
       )
+      |> Req.merge(Config.resolve(:req_opts, []))
 
     req
     |> Req.post()
@@ -403,6 +404,28 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       {:ok, %Req.Response{status: 529}} ->
         {:error, LangChainError.exception(type: "overloaded", message: "Overloaded")}
 
+      {:ok, %Req.Response{status: 429} = response} ->
+        {:error, LangChainError.rate_limit_exceeded(response)}
+
+      {:error, %Req.Response{body: %{message: message}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{body: %{message: message}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
+
       {:error, %Req.TransportError{reason: :timeout} = err} ->
         {:error,
          LangChainError.exception(type: "timeout", message: "Request timed out", original: err)}
@@ -419,7 +442,9 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       other ->
         message = "Unexpected and unhandled API response! #{inspect(other)}"
         Logger.error(message)
-        {:error, LangChainError.exception(type: "unexpected_response", message: message)}
+
+        {:error,
+         LangChainError.exception(type: "unexpected_response", message: message, original: other)}
     end
   end
 
@@ -436,6 +461,7 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       receive_timeout: anthropic.receive_timeout,
       aws_sigv4: aws_sigv4_opts(anthropic.bedrock)
     )
+    |> Req.merge(Config.resolve(:req_opts, []))
     |> Req.post(
       into:
         Utils.handle_stream_fn(

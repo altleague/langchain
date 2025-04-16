@@ -128,6 +128,16 @@ A list of models to use:
 - [OpenAI models on Azure](https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models)
 - [Gemini AI models](https://ai.google.dev/gemini-api/docs/models/gemini)
 
+Add `:req_opts` to LangChain's configuration to override [Req's config](https://hexdocs.pm/req/readme.html#configuration):
+
+```elixir
+config :langchain,
+  req_opts: [
+    retry: :transient,
+    max_retries: 3,
+  ]
+```
+
 ## Prompt caching
 
 ChatGPT and Claude both offer prefix-based prompt caching, which can offer cost and performance benefits for longer prompts. Gemini offers context caching, which is similar.

@@ -62,4 +62,13 @@ defmodule LangChain.LangChainError do
         Exception.format(:error, exception, trace)
     end
   end
+
+  @spec rate_limit_exceeded(original :: any()) :: t()
+  def rate_limit_exceeded(original) do
+    %LangChainError{
+      type: "rate_limit_exceeded",
+      message: "Service rate limits are exceeded",
+      original: original
+    }
+  end
 end
