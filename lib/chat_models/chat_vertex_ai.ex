@@ -3,6 +3,40 @@ defmodule LangChain.ChatModels.ChatVertexAI do
   Parses and validates inputs for making a request for the Google AI  Chat API.
 
   Converts response into more specialized `LangChain` data structures.
+
+  Example Usage:
+
+  ```elixir
+  alias LangChain.Chains.LLMChain
+  alias LangChain.Message
+  alias LangChain.Message.ContentPart
+  alias LangChain.ChatModels.ChatVertexAI
+
+
+  config = %{
+        model: "gemini-2.0-flash",
+        api_key: ..., # vertex requires gcloud auth token https://cloud.google.com/vertex-ai/generative-ai/docs/start/quickstarts/quickstart-multimodal#rest
+        temperature: 1.0,
+        top_p: 0.8,
+        receive_timeout: ...
+      }
+   model = ChatVertexAI.new!(config)
+
+      %{llm: model, verbose: false, stream: false}
+      |> LLMChain.new!()
+      |> LLMChain.add_message(
+        Message.new_user!([
+          ContentPart.new!(%{type: :text, content: "Analyse the provided file and share a summary"}),
+          ContentPart.new!(%{
+            type: :file_url,
+            content: ...,
+            options: [media: ...]
+          })
+        ])
+      )
+      |> LLMChain.run()
+  The above call will return summary of the media content.
+  ```
   """
   use Ecto.Schema
   require Logger
@@ -221,6 +255,15 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     }
   end
 
+  defp for_api(%ContentPart{type: :file_url} = part) do
+    %{
+      "file_data" => %{
+        "mimeType" => Keyword.fetch!(part.options, :media),
+        "file_uri" => part.content
+      }
+    }
+  end
+
   defp for_api(%ToolCall{} = call) do
     %{
       "functionCall" => %{
@@ -273,18 +316,38 @@ defmodule LangChain.ChatModels.ChatVertexAI do
 
   def call(%ChatVertexAI{} = vertex_ai, messages, tools)
       when is_list(messages) do
-    try do
-      case do_api_request(vertex_ai, messages, tools) do
-        {:error, reason} ->
-          {:error, reason}
+    metadata = %{
+      model: vertex_ai.model,
+      message_count: length(messages),
+      tools_count: length(tools)
+    }
 
-        parsed_data ->
-          {:ok, parsed_data}
+    LangChain.Telemetry.span([:langchain, :llm, :call], metadata, fn ->
+      try do
+        # Track the prompt being sent
+        LangChain.Telemetry.llm_prompt(
+          %{system_time: System.system_time()},
+          %{model: vertex_ai.model, messages: messages}
+        )
+
+        case do_api_request(vertex_ai, messages, tools) do
+          {:error, reason} ->
+            {:error, reason}
+
+          parsed_data ->
+            # Track the response being received
+            LangChain.Telemetry.llm_response(
+              %{system_time: System.system_time()},
+              %{model: vertex_ai.model, response: parsed_data}
+            )
+
+            {:ok, parsed_data}
+        end
+      rescue
+        err in LangChainError ->
+          {:error, err}
       end
-    rescue
-      err in LangChainError ->
-        {:error, err}
-    end
+    end)
   end
 
   @doc false
@@ -313,6 +376,17 @@ defmodule LangChain.ChatModels.ChatVertexAI do
 
           result ->
             Callbacks.fire(vertex_ai.callbacks, :on_llm_new_message, [result])
+
+            # Track non-streaming response completion
+            LangChain.Telemetry.emit_event(
+              [:langchain, :llm, :response, :non_streaming],
+              %{system_time: System.system_time()},
+              %{
+                model: vertex_ai.model,
+                response_size: byte_size(inspect(result))
+              }
+            )
+
             result
         end
 
