@@ -595,6 +595,23 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       {:ok, {:error, %LangChainError{} = error}} ->
         {:error, error}
 
+      {:ok, %Req.Response{status: 529}} ->
+        {:error, LangChainError.exception(type: "overloaded", message: "Overloaded")}
+
+      {:ok, %Req.Response{status: 429} = response} ->
+        {:error, LangChainError.rate_limit_exceeded(response)}
+
+      {:error, %Req.Response{body: %{message: message}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
+
       {:error, %Req.TransportError{reason: :timeout} = err} ->
         {:error,
          LangChainError.exception(type: "timeout", message: "Request timed out", original: err)}
