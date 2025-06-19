@@ -1497,8 +1497,6 @@ defmodule LangChain.ChatModels.ChatAnthropic do
     })
   end
 
-  defp get_token_usage(_usage_data), do: nil
-
   @doc """
   Generate a config map that can later restore the model's configuration.
   """
