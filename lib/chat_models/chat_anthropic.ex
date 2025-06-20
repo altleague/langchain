@@ -516,14 +516,6 @@ defmodule LangChain.ChatModels.ChatAnthropic do
            original: response
          )}
 
-      {:error, %Req.Response{body: %{message: message}} = response} ->
-        {:error,
-         LangChainError.exception(
-           type: "unexpected_response",
-           message: message,
-           original: response
-         )}
-
       {:error, %Req.Response{} = response} ->
         {:error, LangChainError.exception(type: "unexpected_response", original: response)}
 
@@ -602,6 +594,23 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       # return it as an error.
       {:ok, {:error, %LangChainError{} = error}} ->
         {:error, error}
+
+      {:ok, %Req.Response{status: 529}} ->
+        {:error, LangChainError.exception(type: "overloaded", message: "Overloaded")}
+
+      {:ok, %Req.Response{status: 429} = response} ->
+        {:error, LangChainError.rate_limit_exceeded(response)}
+
+      {:error, %Req.Response{body: %{message: message}} = response} ->
+        {:error,
+         LangChainError.exception(
+           type: "unexpected_response",
+           message: message,
+           original: response
+         )}
+
+      {:error, %Req.Response{} = response} ->
+        {:error, LangChainError.exception(type: "unexpected_response", original: response)}
 
       {:error, %Req.TransportError{reason: :timeout} = err} ->
         {:error,
@@ -1487,8 +1496,6 @@ defmodule LangChain.ChatModels.ChatAnthropic do
       raw: usage_data
     })
   end
-
-  defp get_token_usage(_usage_data), do: nil
 
   @doc """
   Generate a config map that can later restore the model's configuration.
