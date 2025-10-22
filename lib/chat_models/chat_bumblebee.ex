@@ -112,6 +112,11 @@ defmodule LangChain.ChatModels.ChatBumblebee do
   alias LangChain.Utils.Parser.LLAMA_3_1_CustomToolParser
   alias LangChain.Utils.Parser.LLAMA_3_2_CustomToolParser
 
+  # Suppress warnings for optional dependencies
+  @compile {:no_warn_undefined, [Nx.Serving]}
+  @compile {:no_warn_undefined, [LangChain.Utils.Parser.LLAMA_3_1_CustomToolParser]}
+  @compile {:no_warn_undefined, [LangChain.Utils.Parser.LLAMA_3_2_CustomToolParser]}
+
   @behaviour ChatModel
 
   @current_config_version 1
@@ -570,6 +575,16 @@ defmodule LangChain.ChatModels.ChatBumblebee do
   end
 
   defp fire_token_usage_callback(_model, _token_summary), do: :ok
+
+  @doc """
+  Determine if an error should be retried. If `true`, a fallback LLM may be
+  used. If `false`, the error is understood to be more fundamental with the
+  request rather than a service issue and it should not be retried or fallback
+  to another service.
+  """
+  @impl ChatModel
+  @spec retry_on_fallback?(LangChainError.t()) :: boolean()
+  def retry_on_fallback?(_), do: true
 
   @doc """
   Generate a config map that can later restore the model's configuration.

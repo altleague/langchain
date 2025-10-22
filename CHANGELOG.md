@@ -1,5 +1,126 @@
 # Changelog
 
+## v0.4.0
+
+### Added
+- **ChatOpenAI**: Added support for json-schema in OpenAI responses API (#387)
+- **Documentation**: Added AGENTS.md and CLAUDE.md file support (#385)
+- **CI**: Added support for OTP 28 (#382)
+
+### Changed
+- **ChatOpenAI**: Enhanced OpenAI responses handling (#381)
+- **Documentation**: Use moduledoc instead of doc for LLMChain documentation (#384)
+- **Utils.ChainResult**: Added clarity to message stopped for length handling
+
+### Fixed
+- **ChatBumblebee**: Suppressed compiler warning messages when used as a dependency (#386)
+- **Core**: Fixed Ecto field formatting
+
+---
+
+## v0.4.0-rc.3
+
+### Added
+- **ChatOrqAI**: Added Orq AI chat model support (#377)
+- **ChatOpenAI**: Added OpenAI Deep Research integration (#336)
+- **ChatOpenAI**: Added `parallel_tool_calls` option (#371)
+- **ChatOpenAI**: Added `req_config` option for custom Req configuration (#376)
+- **ChatOpenAI**: Added verbosity parameter support (#379)
+- **ChatVertexAI**: Added support for native tool calls (#359)
+- **ChatGoogleAI**: Added full thinking configuration support (#375)
+- **Bedrock**: Added optional AWS session token handling in BedrockHelpers (#372)
+- **LLMChain**: Added `should_continue?` function for automatic looping on mode `:step` (#361)
+- **Core**: Added `retry_on_fallback?` to chat model definition and all models (#350)
+
+### Fixed
+- **Images**: Fixed handling of LiteLLM responses with null `b64_json` in OpenAI image generation (#368)
+- **Core**: Fixed handling of missing `finish_reason` in streaming responses for LiteLLM compatibility (#367)
+- **ChatGoogleAI**: Fixed error prevention from thinking content parts (#374)
+- **ChatGoogleAI**: Fixed handling of Gemini's cumulative token usage (#373)
+
+---
+
+## v0.4.0-rc.2
+
+### Added
+- **ChatGrok**: Added xAI Grok chat model support (#338)
+- **ChatGoogleAI**: Added thinking support (#354)
+- **ChatGoogleAI**: Added `req_config` option for custom Req configuration (#357)
+- **ChatOllamaAI**: Added missing `verbose_api` field for streaming compatibility (#341)
+- **ChatVertexAI**: Added usage data to Message response metadata (#335)
+- **Images**: Added support for `gpt-image-1` model in OpenAI image generation (#360)
+- **LLMChain**: Added new run mode `:step` for step-by-step execution (#343)
+- **LLMChain**: Added support for multiple tools in `run_until_tool_used` (#345)
+- **OpenAI**: Added organization ID as a parameter for API requests (#337)
+- New callback `on_llm_response_headers` supports receiving the full Req HTTP response headers for a request (#358)
+
+### Changed
+- **Bedrock**: Added OpenAI-compatible API compatibility (#356)
+- **ChatAnthropic**: Expanded logging for API errors (#349)
+- **ChatAnthropic**: Added transient Req retry support in stream mode (#329)
+- **ChatGoogleAI**: Cleaned up MessageDelta handling (#353)
+- **ChatOpenAI**: Only include "user" field with requests when a value is provided (#364)
+- **Dependencies**: Updated gettext requirement to `~> 0.26` (#332)
+
+### Fixed
+- **ChatGoogleAI**: Handle responses with no content parts (#365)
+- **ChatGoogleAI**: Prevent crash when ToolResult contains string content (#352)
+- **Core**: Fixed issue with poorly matching list in case statements (#334)
+- **Core**: Filter out empty lists in message responses (#333)
+
+### Breaking Changes
+- **ChatOllamaAI**: Fixed `stop` field type from `:string` to `{:array, :string}` to match Ollama API requirements. Previously, stop sequences were non-functional due to API type mismatch. Now accepts arrays like `["\\n", "Human:", "<|eot_id|>"]`. Empty arrays are excluded from API requests to preserve modelfile defaults (#342)
+
+---
+
+## v0.4.0-rc.1
+
+---
+
+### Breaking Changes
+- ToolResult `content` now supports a list of ContentParts, not just strings. Functions can return a ToolResult directly for advanced control (e.g., cache control, processed_content).
+- Expanded multi-modal support: messages and tool results can now include text, images, files, and thinking blocks as ContentParts.
+- LLMChain: Added `async_tool_timeout` config; improved fallback and error handling.
+- `LangChain.Function` changed the default for `async` to `false`. If you want async execution, set `async: true` explicitly when defining your function.
+- The `on_llm_new_delta` callback now receives a list of `MessageDelta` structs instead of a single one. To merge the received deltas into your chain for display, use:
+
+```elixir
+updated_chain = LLMChain.merge_deltas(current_llm_chain, deltas)
+```
+
+### Upgrading from v0.4.0-rc.0 - v0.4.0-rc.1
+- If you return a ToolResult from a function, you can now use ContentParts for richer responses. See module docs for details.
+- If you use custom chunking logic, see the new tokenizer support in TextSplitter.
+- If you are displaying streamed MessageDelta results using the `on_llm_new_delta` callback, you will need to update your callback function to expect a list of MessageDeltas and you can use the new `LLMChain.merge_deltas` function for merging them into your chain. The resulting merged delta can be used for display.
+
+#### Model Compatibility
+- The following models have been verified with this version:
+  - ChatOpenAI
+  - ChatAnthropic
+  - ChatGoogleAI
+- There are known broken live tests with Perplexity and likely others. Not all models are currently verified or supported in this release.
+
+**Assistance is requested** for verifying/updating other models and their tests.
+
+### Added
+- Telemetry to `LLMChain.run_until_tool_used` for better observability.
+- Google Gemini 2.0+ supports native Google Search as a tool.
+- MistralAI: Structured output support.
+- ChatGoogleAI: `verbose_api` option; updated default model to `gemini-2.5-pro`.
+- TextSplitter: Added configurable tokenizer support for chunking by tokens, not just characters.
+
+### Changed
+- ChatOpenAI: Improved handling of ContentParts in ToolResults; better support for reasoning models and robust API options.
+- ChatGoogleAI: Improved ToolResult handling for ContentParts; better error and token usage reporting.
+- ChatAnthropic: Expanded prompt caching support and documentation; improved error and token usage handling.
+- LLMChain: Improved fallback and error handling; added async tool timeout config.
+- TextSplitter: Now supports custom tokenizers for chunking.
+
+### Fixed
+- ToolCalls: Fixed issues with nil tool_calls and tool call processing.
+- Token Usage: Fixed token usage reporting for GoogleAI.
+- Bedrock Stream Decoder: Fixed chunk order issue.
+
 ## v0.4.0-rc.0
 
 This includes several breaking changes:
@@ -17,8 +138,8 @@ Use the v0.3.x releases for models that are not yet supported.
 | OpenAI DALL-e 2 (image generation) | ✓ | ? |
 | Anthropic Claude | ✓ | ✓ |
 | Anthropic Claude (thinking) | X | ✓ |
-| Google Gemini | ✓ | X |
-| Google Vertex AI | ✓ | X |
+| Google Gemini | ✓ | ✓ |
+| Google Vertex AI | ✓ | ✓ |
 | Ollama | ✓ | ? |
 | Mistral | ✓ | X |
 | Bumblebee self-hosted models | ✓ | ? |

@@ -4,6 +4,7 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
 
   doctest LangChain.ChatModels.ChatAnthropic
 
+  import LangChain.TestingHelpers
   alias LangChain.ChatModels.ChatAnthropic
   alias LangChain.Chains.LLMChain
   alias LangChain.Message
@@ -237,6 +238,39 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
       assert data.tool_choice == %{"type" => "tool", "name" => "get_weather"}
     end
 
+    test "includes disable_parallel_tool_use when set in tool_choice" do
+      {:ok, anthropic} =
+        ChatAnthropic.new(%{
+          model: @test_model,
+          tool_choice: %{"type" => "auto", "disable_parallel_tool_use" => true}
+        })
+
+      data = ChatAnthropic.for_api(anthropic, [], [])
+      assert data.model == @test_model
+      assert data.tool_choice == %{"type" => "auto", "disable_parallel_tool_use" => true}
+    end
+
+    test "includes disable_parallel_tool_use with specific tool" do
+      {:ok, anthropic} =
+        ChatAnthropic.new(%{
+          model: @test_model,
+          tool_choice: %{
+            "type" => "tool",
+            "name" => "get_weather",
+            "disable_parallel_tool_use" => true
+          }
+        })
+
+      data = ChatAnthropic.for_api(anthropic, [], [])
+      assert data.model == @test_model
+
+      assert data.tool_choice == %{
+               "type" => "tool",
+               "name" => "get_weather",
+               "disable_parallel_tool_use" => true
+             }
+    end
+
     test "adds tool definitions to map" do
       tool =
         Function.new!(%{
@@ -335,19 +369,19 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
                    "content" => [
                      %{"text" => "That was a lot of stuff.", "type" => "text"},
                      %{
-                       "content" => "sudo hi 1",
+                       "content" => [%{"text" => "sudo hi 1", "type" => "text"}],
                        "is_error" => false,
                        "tool_use_id" => "call_123",
                        "type" => "tool_result"
                      },
                      %{
-                       "content" => "sudo hi 2",
+                       "content" => [%{"text" => "sudo hi 2", "type" => "text"}],
                        "is_error" => false,
                        "tool_use_id" => "call_234",
                        "type" => "tool_result"
                      },
                      %{
-                       "content" => "sudo hi 3",
+                       "content" => [%{"text" => "sudo hi 3", "type" => "text"}],
                        "is_error" => false,
                        "tool_use_id" => "call_345",
                        "type" => "tool_result"
@@ -1356,9 +1390,15 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
       @tag live_call: true, live_api: api
       test "#{BedrockHelpers.prefix_for(api)}basic streamed content example and fires ratelimit callback",
            %{live_api: api, api_config: api_config} do
+        # NOTE: These callback handlers are not wrapped because they are not
+        # being run through the LLMChain. They are being run directly from the
+        # Chat model.
         handlers = %{
           on_llm_ratelimit_info: fn headers ->
             send(self(), {:fired_ratelimit_info, headers})
+          end,
+          on_llm_response_headers: fn response_headers ->
+            send(self(), {:fired_response_headers, response_headers})
           end
         }
 
@@ -1372,26 +1412,17 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
             Message.new_user!("Return the response 'Keep up the good work!'.")
           ])
 
-        # returns a list of MessageDeltas.
-        [d1, d2, d3, d4, d5] = result
+        # NOTE: The results differ pretty significantly between the Bedrock and
+        # Anthropic APIs. To avoid test failures, we combine the results into a
+        # merged delta for final comparison.
+        merged = result |> List.flatten() |> MessageDelta.merge_deltas()
 
-        assert d1.content == []
-        assert %TokenUsage{input: 25, output: output} = d1.metadata.usage
-        assert output >= 1
-
-        assert d2.content == ContentPart.text!("")
-        assert d2.metadata == nil
-
-        assert d3.content == ContentPart.text!("Keep")
-        assert d3.metadata == nil
-
-        assert d4.content == ContentPart.text!(" up the good work!")
-        assert d4.metadata == nil
-
-        # usage
-        assert d5.content == nil
-        assert d5.metadata.usage.input == nil
-        assert %TokenUsage{input: nil, output: 9} = d5.metadata.usage
+        assert merged.merged_content == [ContentPart.text!("Keep up the good work!")]
+        assert %TokenUsage{input: input, output: 10} = merged.metadata.usage
+        # NOTE: Each API computes tokens differently. Anthropic is 25 while Bedrock is 50.
+        assert input >= 25
+        assert merged.status == :complete
+        assert merged.role == :assistant
 
         assert_received {:fired_ratelimit_info, info}
 
@@ -1408,6 +1439,13 @@ defmodule LangChain.ChatModels.ChatAnthropicTest do
                    "request-id" => _
                  } = info
         end
+
+        assert_received {:fired_response_headers, response_headers}
+
+        assert %{
+                 "connection" => ["keep-alive"],
+                 "content-type" => ["text/event-stream; charset=utf-8"]
+               } = response_headers
       end
     end
   end
@@ -1936,11 +1974,13 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
       {:ok, deltas} = ChatAnthropic.call(llm, "What is 400 + 50 + 3?")
       # IO.inspect(deltas, label: "RESULT DELTAS")
 
-      {:ok, %Message{} = merged} = MessageDelta.merge_deltas(deltas) |> MessageDelta.to_message()
+      {:ok, %Message{} = merged} =
+        deltas |> List.flatten() |> MessageDelta.merge_deltas() |> MessageDelta.to_message()
+
       # IO.inspect(merged, label: "MERGED")
 
       answer = ContentPart.parts_to_string(merged.content)
-      # IO.inspect(parts, label: "PARTS")
+      # IO.inspect(answer, label: "ANSWER")
       assert answer =~ "453"
     end
 
@@ -2042,7 +2082,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           %{
             "type" => "tool_result",
             "tool_use_id" => "toolu_123",
-            "content" => "tool answer",
+            "content" => [%{"text" => "tool answer", "type" => "text"}],
             "is_error" => false
           }
         ]
@@ -2063,7 +2103,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           %{
             "type" => "tool_result",
             "tool_use_id" => "toolu_234",
-            "content" => "stuff failed",
+            "content" => [%{"text" => "stuff failed", "type" => "text"}],
             "is_error" => true
           }
         ]
@@ -2072,12 +2112,14 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
       assert expected == ChatAnthropic.message_for_api(tool_error_result)
     end
 
-    test "tool results support prompt caching" do
+    test "tool result supports prompt caching in the result options" do
+      # NOTE: This is legacy support isn't listed in the current API docs.
       tool_success_result =
         Message.new_tool_result!(%{
           tool_results: [
             ToolResult.new!(%{
               tool_call_id: "toolu_123",
+              # content is a plain string
               content: "tool answer",
               options: [cache_control: true]
             })
@@ -2090,7 +2132,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           %{
             "type" => "tool_result",
             "tool_use_id" => "toolu_123",
-            "content" => "tool answer",
+            "content" => [%{"text" => "tool answer", "type" => "text"}],
             "is_error" => false,
             "cache_control" => %{"type" => "ephemeral"}
           }
@@ -2098,15 +2140,15 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
       }
 
       assert expected == ChatAnthropic.message_for_api(tool_success_result)
+    end
 
-      tool_error_result =
+    test "tool result supports prompt caching in content parts" do
+      tool_success_result =
         Message.new_tool_result!(%{
           tool_results: [
             ToolResult.new!(%{
-              tool_call_id: "toolu_234",
-              content: "stuff failed",
-              is_error: true,
-              options: [cache_control: true]
+              tool_call_id: "toolu_123",
+              content: [ContentPart.text!("tool answer", cache_control: true)]
             })
           ]
         })
@@ -2116,15 +2158,20 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         "content" => [
           %{
             "type" => "tool_result",
-            "tool_use_id" => "toolu_234",
-            "content" => "stuff failed",
-            "is_error" => true,
-            "cache_control" => %{"type" => "ephemeral"}
+            "tool_use_id" => "toolu_123",
+            "content" => [
+              %{
+                "text" => "tool answer",
+                "type" => "text",
+                "cache_control" => %{"type" => "ephemeral"}
+              }
+            ],
+            "is_error" => false
           }
         ]
       }
 
-      assert expected == ChatAnthropic.message_for_api(tool_error_result)
+      assert expected == ChatAnthropic.message_for_api(tool_success_result)
     end
   end
 
@@ -2204,7 +2251,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
     end
   end
 
-  describe "for_api/1" do
+  describe "function_for_api/1" do
     test "turns a function definition into the expected JSON format" do
       # with no description
       tool =
@@ -2214,7 +2261,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           function: fn _args, _context -> :ok end
         })
 
-      output = ChatAnthropic.for_api(tool)
+      output = ChatAnthropic.function_for_api(tool)
 
       assert output == %{
                "name" => "do_something",
@@ -2230,7 +2277,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           function: fn _args, _context -> :ok end
         })
 
-      output = ChatAnthropic.for_api(tool)
+      output = ChatAnthropic.function_for_api(tool)
 
       assert output == %{
                "name" => "do_something",
@@ -2257,7 +2304,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           function: fn _args, _context -> :ok end
         })
 
-      output = ChatAnthropic.for_api(tool)
+      output = ChatAnthropic.function_for_api(tool)
 
       assert output == %{
                "name" => "do_something",
@@ -2279,55 +2326,29 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
              }
     end
 
-    test "turns a tool_call into expected JSON format" do
-      call = ToolCall.new!(%{call_id: "toolu_123", name: "greet", arguments: %{"name" => "John"}})
+    test "supports cache_control on the function options" do
+      tool =
+        Function.new!(%{
+          name: "do_something",
+          parameters: [],
+          function: fn _args, _context -> :ok end,
+          options: [cache_control: true]
+        })
 
-      json = ChatAnthropic.for_api(call)
+      output = ChatAnthropic.function_for_api(tool)
 
-      expected = %{
-        "type" => "tool_use",
-        "id" => "toolu_123",
-        "name" => "greet",
-        "input" => %{"name" => "John"}
-      }
-
-      assert json == expected
-    end
-
-    test "turns a tool result into expected JSON format" do
-      tool_success_result = ToolResult.new!(%{tool_call_id: "toolu_123", content: "tool answer"})
-
-      json = ChatAnthropic.for_api(tool_success_result)
-
-      expected = %{
-        "type" => "tool_result",
-        "tool_use_id" => "toolu_123",
-        "content" => "tool answer",
-        "is_error" => false
-      }
-
-      assert json == expected
-
-      tool_error_result =
-        ToolResult.new!(%{tool_call_id: "toolu_234", content: "stuff failed", is_error: true})
-
-      json = ChatAnthropic.for_api(tool_error_result)
-
-      expected = %{
-        "type" => "tool_result",
-        "tool_use_id" => "toolu_234",
-        "content" => "stuff failed",
-        "is_error" => true
-      }
-
-      assert json == expected
+      assert output == %{
+               "name" => "do_something",
+               "input_schema" => %{"properties" => %{}, "type" => "object"},
+               "cache_control" => %{"type" => "ephemeral"}
+             }
     end
 
     test "tools work with minimal definition and no parameters" do
       {:ok, fun} =
         Function.new(%{name: "hello_world", function: &hello_world/2})
 
-      result = ChatAnthropic.for_api(fun)
+      result = ChatAnthropic.function_for_api(fun)
 
       assert result == %{
                "name" => "hello_world",
@@ -2359,13 +2380,59 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           function: fn _args, _context -> "Hi" end
         })
 
-      result = ChatAnthropic.for_api(fun)
+      result = ChatAnthropic.function_for_api(fun)
 
       assert result == %{
                "name" => "say_hi",
                "description" => "Provide a friendly greeting.",
                "input_schema" => params_def
              }
+    end
+  end
+
+  describe "for_api/1" do
+    test "turns a tool_call into expected JSON format" do
+      call = ToolCall.new!(%{call_id: "toolu_123", name: "greet", arguments: %{"name" => "John"}})
+
+      json = ChatAnthropic.for_api(call)
+
+      expected = %{
+        "type" => "tool_use",
+        "id" => "toolu_123",
+        "name" => "greet",
+        "input" => %{"name" => "John"}
+      }
+
+      assert json == expected
+    end
+
+    test "turns a tool result into expected JSON format" do
+      tool_success_result = ToolResult.new!(%{tool_call_id: "toolu_123", content: "tool answer"})
+
+      json = ChatAnthropic.for_api(tool_success_result)
+
+      expected = %{
+        "type" => "tool_result",
+        "tool_use_id" => "toolu_123",
+        "content" => [%{"text" => "tool answer", "type" => "text"}],
+        "is_error" => false
+      }
+
+      assert json == expected
+
+      tool_error_result =
+        ToolResult.new!(%{tool_call_id: "toolu_234", content: "stuff failed", is_error: true})
+
+      json = ChatAnthropic.for_api(tool_error_result)
+
+      expected = %{
+        "type" => "tool_result",
+        "tool_use_id" => "toolu_234",
+        "content" => [%{"text" => "stuff failed", "type" => "text"}],
+        "is_error" => true
+      }
+
+      assert json == expected
     end
   end
 
@@ -2598,7 +2665,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 
       # has the result from the function execution
       [tool_result] = updated_chain.last_message.tool_results
-      assert tool_result.content == "SUCCESS"
+      assert tool_result.content == [ContentPart.text!("SUCCESS")]
     end
 
     describe "#{BedrockHelpers.prefix_for(api)} works within a chain" do
@@ -2630,10 +2697,12 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         assert updated_chain.last_message.status == :complete
         assert updated_chain.last_message.role == :assistant
         # the final message includes the token usage
-        assert %TokenUsage{input: 20} = updated_chain.last_message.metadata.usage
+        assert %TokenUsage{input: usage} = updated_chain.last_message.metadata.usage
+        # Anthropic and Bedrock compute token usage differently for the same inputs.
+        assert usage in [20, 40]
 
         assert_received {:streamed_fn, data}
-        assert %MessageDelta{role: :assistant} = data
+        assert [%MessageDelta{role: :assistant} | _] = data
       end
 
       Module.put_attribute(__MODULE__, :tag, {:"live_#{api}", true})
@@ -2653,6 +2722,9 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
           end,
           on_llm_token_usage: fn %LLMChain{} = _chain, usage ->
             send(self(), {:fired_token_usage, usage})
+          end,
+          on_llm_response_headers: fn %LLMChain{} = _chain, response_headers ->
+            send(self(), {:fired_response_headers, response_headers})
           end
         }
 
@@ -2692,6 +2764,14 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         # should have fired the token usage callback
         assert_received {:fired_token_usage, usage}
         assert %TokenUsage{input: 20} = usage
+
+        # should have fired the response headers callback
+        assert_received {:fired_response_headers, response_headers}
+
+        assert %{
+                 "connection" => ["keep-alive"],
+                 "content-type" => ["application/json"]
+               } = response_headers
       end
 
       Module.put_attribute(__MODULE__, :tag, {:"live_#{api}", true})
@@ -2727,7 +2807,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         assert updated_chain.last_message.role == :assistant
 
         assert_received {:streamed_fn, data}
-        assert %MessageDelta{role: :assistant} = data
+        assert [%MessageDelta{role: :assistant} | _] = data
       end
     end
 
@@ -2767,6 +2847,103 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 
     #   assert false
     # end
+  end
+
+  describe "use in LLMChain" do
+    @tag live_call: true, live_anthropic: true
+    test "NOT STREAMED with callbacks and token usage" do
+      handler = %{
+        on_llm_new_delta: fn %LLMChain{} = _chain, deltas ->
+          send(self(), {:test_stream_deltas, deltas})
+        end,
+        on_message_processed: fn %LLMChain{} = _chain, message ->
+          send(self(), {:test_message_processed, message})
+        end,
+        on_llm_token_usage: fn %LLMChain{} = _chain, usage ->
+          send(self(), {:test_token_usage, usage})
+        end
+      }
+
+      # We can construct an LLMChain from a PromptTemplate and an LLM.
+      model = ChatAnthropic.new!(%{temperature: 1, seed: 0, stream: false})
+
+      {:ok, updated_chain} =
+        %{llm: model}
+        |> LLMChain.new!()
+        |> LLMChain.add_callback(handler)
+        |> LLMChain.add_messages([
+          Message.new_user!("Suggest one good name for a company that makes colorful socks?")
+        ])
+        |> LLMChain.run()
+
+      assert %Message{role: :assistant} = updated_chain.last_message
+      assert %TokenUsage{input: 28} = updated_chain.last_message.metadata.usage
+
+      assert_received {:test_message_processed, message}
+      assert %Message{role: :assistant} = message
+      # the final returned message should match the callback message
+      assert message == updated_chain.last_message
+      # we should have received the final combined message
+      refute_received {:test_stream_deltas, _delta}
+
+      assert_received {:test_token_usage, usage}
+      assert %TokenUsage{input: 28} = usage
+    end
+
+    @tag live_call: true, live_anthropic: true
+    test "STREAMED with callbacks and token usage" do
+      handler = %{
+        on_llm_new_delta: fn %LLMChain{} = _chain, deltas ->
+          send(self(), deltas)
+        end,
+        on_message_processed: fn %LLMChain{} = _chain, message ->
+          send(self(), {:test_message_processed, message})
+        end,
+        on_llm_token_usage: fn %LLMChain{} = _chain, usage ->
+          send(self(), {:test_token_usage, usage})
+        end
+      }
+
+      # We can construct an LLMChain from a PromptTemplate and an LLM.
+      model =
+        ChatAnthropic.new!(%{
+          temperature: 1,
+          seed: 0,
+          stream: true
+        })
+
+      original_chain =
+        %{llm: model}
+        |> LLMChain.new!()
+        |> LLMChain.add_callback(handler)
+        |> LLMChain.add_messages([
+          Message.new_user!("Suggest one good name for a company that makes colorful socks?")
+        ])
+
+      {:ok, updated_chain} = original_chain |> LLMChain.run()
+
+      assert %Message{role: :assistant, status: :complete} = updated_chain.last_message
+      assert %TokenUsage{input: 56} = updated_chain.last_message.metadata.usage
+
+      assert_received {:test_message_processed, message}
+      assert %Message{role: :assistant} = message
+      # the final returned message should match the callback message
+      assert message == updated_chain.last_message
+
+      assert_received {:test_token_usage, usage}
+      assert %TokenUsage{input: 56} = usage
+
+      # get all the deltas sent to the test process
+      deltas = collect_messages() |> List.flatten()
+
+      # apply the deltas to the original chain
+      delta_merged_chain = LLMChain.apply_deltas(original_chain, deltas)
+
+      # the received merged deltas should match the ones assembled by the chain.
+      # This is also verifying that we're receiving the token usage via sent
+      # deltas.
+      assert delta_merged_chain.last_message == updated_chain.last_message
+    end
   end
 
   describe "serialize_config/2" do

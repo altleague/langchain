@@ -12,7 +12,6 @@ defmodule LangChain.ChatModels.ChatVertexAI do
   alias LangChain.Message.ContentPart
   alias LangChain.ChatModels.ChatVertexAI
 
-
   config = %{
         model: "gemini-2.0-flash",
         api_key: ..., # vertex requires gcloud auth token https://cloud.google.com/vertex-ai/generative-ai/docs/start/quickstarts/quickstart-multimodal#rest
@@ -53,6 +52,9 @@ defmodule LangChain.ChatModels.ChatVertexAI do
   alias LangChain.LangChainError
   alias LangChain.Utils
   alias LangChain.Callbacks
+  alias LangChain.TokenUsage
+  alias LangChain.NativeTool
+  alias LangChain.Function
 
   @behaviour ChatModel
 
@@ -100,6 +102,9 @@ defmodule LangChain.ChatModels.ChatVertexAI do
 
     # A list of maps for callback handlers (treated as internal)
     field :callbacks, {:array, :map}, default: []
+
+    # Additional level of raw api request and response data
+    field :verbose_api, :boolean, default: false
   end
 
   @type t :: %ChatVertexAI{}
@@ -280,12 +285,34 @@ defmodule LangChain.ChatModels.ChatVertexAI do
   end
 
   defp for_api(%ToolResult{} = result) do
+    content =
+      result.content
+      |> ContentPart.parts_to_string()
+      |> Jason.decode()
+      |> case do
+        {:ok, data} ->
+          # content was converted through JSON
+          data
+
+        {:error, %Jason.DecodeError{}} ->
+          # assume the result is intended to be a string and return it as-is
+          %{"result" => result.content}
+      end
+
     %{
       "functionResponse" => %{
         "name" => result.name,
-        "response" => Jason.decode!(result.content)
+        "response" => content
       }
     }
+  end
+
+  defp for_api(%NativeTool{name: name, configuration: %{} = config}) do
+    %{name => config}
+  end
+
+  defp for_api(%NativeTool{name: name, configuration: nil}) do
+    name
   end
 
   defp for_api(nil), do: nil
@@ -375,8 +402,10 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     req
     |> Req.post()
     |> case do
-      {:ok, %Req.Response{body: data}} ->
-        case do_process_response(data) do
+      {:ok, %Req.Response{body: data} = response} ->
+        Callbacks.fire(vertex_ai.callbacks, :on_llm_response_headers, [response.headers])
+
+        case do_process_response(vertex_ai, data) do
           {:error, reason} ->
             {:error, reason}
 
@@ -420,11 +449,13 @@ defmodule LangChain.ChatModels.ChatVertexAI do
         Utils.handle_stream_fn(
           vertex_ai,
           &ChatOpenAI.decode_stream/1,
-          &do_process_response(&1, MessageDelta)
+          &do_process_response(vertex_ai, &1, MessageDelta)
         )
     )
     |> case do
-      {:ok, %Req.Response{body: data}} ->
+      {:ok, %Req.Response{body: data} = response} ->
+        Callbacks.fire(vertex_ai.callbacks, :on_llm_response_headers, [response.headers])
+
         # Google AI uses `finishReason: "STOP` for all messages in the stream.
         # This field can't be used to terminate the list of deltas, so simulate
         # this behavior by forcing the final delta to have `status: :complete`.
@@ -465,14 +496,31 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     update_in(data, [Access.at(-1), Access.at(-1)], &%{&1 | status: :complete})
   end
 
-  def do_process_response(response, message_type \\ Message)
+  def do_process_response(model, response, message_type \\ Message)
 
-  def do_process_response(%{"candidates" => candidates}, message_type) when is_list(candidates) do
+  def do_process_response(model, %{"candidates" => candidates} = data, message_type)
+      when is_list(candidates) do
+    token_usage = get_token_usage(data)
+
+    case token_usage do
+      %TokenUsage{} = usage ->
+        Callbacks.fire(model.callbacks, :on_llm_token_usage, [usage])
+        :ok
+
+      nil ->
+        :ok
+    end
+
     candidates
-    |> Enum.map(&do_process_response(&1, message_type))
+    |> Enum.map(&do_process_response(model, &1, message_type))
+    |> Enum.map(&TokenUsage.set(&1, token_usage))
   end
 
-  def do_process_response(%{"content" => %{"parts" => parts} = content_data} = data, Message) do
+  def do_process_response(
+        model,
+        %{"content" => %{"parts" => parts} = content_data} = data,
+        Message
+      ) do
     text_part =
       parts
       |> filter_parts_for_types(["text"])
@@ -484,14 +532,14 @@ defmodule LangChain.ChatModels.ChatVertexAI do
       parts
       |> filter_parts_for_types(["functionCall"])
       |> Enum.map(fn part ->
-        do_process_response(part, nil)
+        do_process_response(model, part, nil)
       end)
 
     tool_result_from_parts =
       parts
       |> filter_parts_for_types(["functionResponse"])
       |> Enum.map(fn part ->
-        do_process_response(part, nil)
+        do_process_response(model, part, nil)
       end)
 
     %{
@@ -512,7 +560,11 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     end
   end
 
-  def do_process_response(%{"content" => %{"parts" => parts} = content_data} = data, MessageDelta) do
+  def do_process_response(
+        model,
+        %{"content" => %{"parts" => parts} = content_data} = data,
+        MessageDelta
+      ) do
     text_content =
       case parts do
         [%{"text" => text}] ->
@@ -532,7 +584,7 @@ defmodule LangChain.ChatModels.ChatVertexAI do
       parts
       |> filter_parts_for_types(["functionCall"])
       |> Enum.map(fn part ->
-        do_process_response(part, nil)
+        do_process_response(model, part, nil)
       end)
 
     %{
@@ -552,7 +604,11 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     end
   end
 
-  def do_process_response(%{"functionCall" => %{"args" => raw_args, "name" => name}} = data, _) do
+  def do_process_response(
+        _model,
+        %{"functionCall" => %{"args" => raw_args, "name" => name}} = data,
+        _
+      ) do
     %{
       call_id: "call-#{name}",
       name: name,
@@ -571,6 +627,7 @@ defmodule LangChain.ChatModels.ChatVertexAI do
   end
 
   def do_process_response(
+        _model,
         %{
           "finishReason" => finish,
           "content" => %{"parts" => parts, "role" => role},
@@ -614,12 +671,12 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     end
   end
 
-  def do_process_response(%{"error" => %{"message" => reason}} = response, _) do
+  def do_process_response(_model, %{"error" => %{"message" => reason}} = response, _) do
     Logger.error("Received error from API: #{inspect(reason)}")
     {:error, LangChainError.exception(message: reason, original: response)}
   end
 
-  def do_process_response({:error, %Jason.DecodeError{} = response}, _) do
+  def do_process_response(_model, {:error, %Jason.DecodeError{} = response}, _) do
     error_message = "Received invalid JSON: #{inspect(response)}"
     Logger.error(error_message)
 
@@ -627,7 +684,7 @@ defmodule LangChain.ChatModels.ChatVertexAI do
      LangChainError.exception(type: "invalid_json", message: error_message, original: response)}
   end
 
-  def do_process_response(other, _) do
+  def do_process_response(_model, other, _) do
     Logger.error("Trying to process an unexpected response. #{inspect(other)}")
 
     {:error,
@@ -671,9 +728,34 @@ defmodule LangChain.ChatModels.ChatVertexAI do
     end
   end
 
+  defp get_token_usage(%{"usageMetadata" => usage} = _response_body) do
+    # extract out the reported response token usage
+    TokenUsage.new!(%{
+      input: Map.get(usage, "promptTokenCount", 0),
+      output: Map.get(usage, "candidatesTokenCount", 0),
+      raw: usage
+    })
+  end
+
+  defp get_token_usage(_response_body), do: nil
+
   defp unmap_role("model"), do: "assistant"
   defp unmap_role("function"), do: "tool"
   defp unmap_role(role), do: role
+
+  @doc """
+  Determine if an error should be retried. If `true`, a fallback LLM may be
+  used. If `false`, the error is understood to be more fundamental with the
+  request rather than a service issue and it should not be retried or fallback
+  to another service.
+  """
+  @impl ChatModel
+  @spec retry_on_fallback?(LangChainError.t()) :: boolean()
+  def retry_on_fallback?(%LangChainError{type: "rate_limited"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "rate_limit_exceeded"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "timeout"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "too_many_requests"}), do: true
+  def retry_on_fallback?(_), do: false
 
   @doc """
   Generate a config map that can later restore the model's configuration.

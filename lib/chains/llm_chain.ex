@@ -1,12 +1,13 @@
 defmodule LangChain.Chains.LLMChain do
-  @doc """
+  @moduledoc """
   Define an LLMChain. This is the heart of the LangChain library.
 
   The chain deals with tools, a tool map, delta tracking, tracking the messages
   exchanged during a run, the last_message tracking, conversation messages, and
-  verbose logging. This helps by separating these responsibilities from the LLM
-  making it easier to support additional LLMs because the focus is on
-  communication and formats instead of all the extra logic.
+  verbose logging. Messages and tool results support multi-modal ContentParts,
+  enabling richer responses (text, images, files, thinking, etc.). ToolResult
+  content can be a list of ContentParts. The chain also supports
+  `async_tool_timeout` and improved fallback handling.
 
   ## Callbacks
 
@@ -144,6 +145,22 @@ defmodule LangChain.Chains.LLMChain do
   - `:ok` - Indicating success
   - The updated chain with all messages and tool calls
   - The specific tool result that matched the requested tool name
+
+  ### Using Multiple Tool Names
+
+  You can also provide a list of tool names to stop when any one of them is called:
+
+      {:ok, %LLMChain{} = updated_chain, %ToolResult{} = tool_result} =
+        %{llm: ChatOpenAI.new!(%{stream: false})}
+        |> LLMChain.new!()
+        |> LLMChain.add_tools([search_tool, summary_tool, report_tool])
+        |> LLMChain.add_message(Message.new_system!())
+        |> LLMChain.add_message(Message.new_user!("..."))
+        |> LLMChain.run_until_tool_used(["summary_tool", "report_tool"])
+
+  This variant is useful when you have multiple tools that could serve as valid
+  endpoints for your workflow, and you want the LLM to choose the most appropriate
+  one based on the context.
 
   To prevent runaway function calls, a default `max_runs` value of 25 is set.
   You can adjust this as needed:
@@ -368,8 +385,8 @@ defmodule LangChain.Chains.LLMChain do
   ## Options
 
   - `:mode` - It defaults to run the chain one time, stopping after receiving a
-    response from the LLM. Supports `:until_success` and
-    `:while_needs_response`.
+    response from the LLM. Supports `:until_success`, `:while_needs_response`,
+    and `:step`.
 
   - `mode: :until_success` - (for non-interactive processing done by the LLM
     where it may repeatedly fail and need to re-try) Repeatedly evaluates a
@@ -390,6 +407,22 @@ defmodule LangChain.Chains.LLMChain do
     are evaluated, the `ToolResult` messages are returned to the LLM giving it
     an opportunity to use the `ToolResult` information in an assistant response
     message. In essence, this mode always gives the LLM the last word.
+
+  - `mode: :step` - (for step-by-step execution control) Executes one step of
+    the chain: makes an LLM call, processes the message, executes any tool
+    calls, and then stops. This allows the caller to inspect messages and
+    modify the chain between steps before deciding whether to continue by
+    calling `run` again. Perfect for scenarios where you need to examine
+    each message, update context, or modify the chain state before proceeding.
+
+  - `should_continue?` - (for automated stepped execution with conditional
+    stopping) Needs to be used with `mode: :step`, this option accepts a function
+    that receives the updated chain after each step and returns a boolean
+    indicating whether to continue. This internally handles the loop logic,
+    making stepped execution more streamlined for scenarios where you need
+    to inspect the chain state to determine when to stop (e.g., max iterations,
+    completion conditions, error thresholds). The function signature is
+    `(LLMChain.t() -> boolean())`.
 
   - `with_fallbacks: [...]` - Provide a list of chat models to use as a fallback
     when one fails. This helps a production system remain operational when an
@@ -420,6 +453,33 @@ defmodule LangChain.Chains.LLMChain do
 
       LLMChain.run(chain, mode: :until_success)
 
+  **Use Case**: Automated stepped execution with a continuation function.
+  When you want step-by-step control but prefer the loop to be handled
+  internally based on a condition function.
+
+      should_continue_fn = fn updated_chain ->
+        # Continue while we need a response and haven't hit max iterations
+        updated_chain.needs_response && Enum.count(updated_chain.exchanged_messages) < 10
+      end
+
+      {:ok, final_chain} = LLMChain.run(chain, mode: :step, should_continue?: should_continue_fn)
+
+  **Use Case**: Step-by-step execution where you need control of the loop.
+  In case you want to inspect the result of each step and decide whether to
+  continue or not, This is useful for debugging, to stop when you receive a
+  signal of a guardrail or a specific condition.
+
+      {:ok, updated_chain} = LLMChain.run(chain, mode: :step)
+      # Inspect the result, check tool calls, etc.
+      if should_continue?(updated_chain) do
+        # Optionally modify the chain before continuing
+        modified_chain = updated_chain
+          |> LLMChain.update_custom_context(%{iteration_count: get_iteration_count() + 1})
+          |> LLMChain.add_message(Message.new_user!("Continue with the next step"))
+
+        {:ok, final_chain} = LLMChain.run(modified_chain, mode: :step)
+      end
+
   """
   @spec run(t(), Keyword.t()) :: {:ok, t()} | {:error, t(), LangChainError.t()}
   def run(chain, opts \\ [])
@@ -444,6 +504,10 @@ defmodule LangChain.Chains.LLMChain do
 
           :until_success ->
             &run_until_success/1
+
+          :step ->
+            should_continue_fn = Keyword.get(opts, :should_continue?)
+            &run_step(&1, should_continue_fn)
         end
 
       # Add telemetry for chain execution
@@ -510,6 +574,8 @@ defmodule LangChain.Chains.LLMChain do
   end
 
   defp try_chain_with_llm(chain, [llm | tail], before_fallback_fn, run_fn) do
+    %llm_module{} = llm
+
     use_chain = %LLMChain{chain | llm: llm}
 
     use_chain =
@@ -525,11 +591,18 @@ defmodule LangChain.Chains.LLMChain do
         {:ok, result} ->
           {:ok, result}
 
-        {:error, _error_chain, reason} ->
-          # run attempt received an error. Try again with the next LLM
-          Logger.warning("LLM call failed, using next fallback. Reason: #{inspect(reason)}")
+        {:error, _error_chain, reason} = error ->
+          # Check with the chat model if this error should be retried on a
+          # fallback model or not.
+          if llm_module.retry_on_fallback?(reason) do
+            # run attempt received an error. Try again with the next LLM
+            Logger.warning("LLM call failed, using next fallback. Reason: #{inspect(reason)}")
 
-          try_chain_with_llm(use_chain, tail, before_fallback_fn, run_fn)
+            try_chain_with_llm(use_chain, tail, before_fallback_fn, run_fn)
+          else
+            # error should not be retried. Return the error.
+            error
+          end
       end
     rescue
       err ->
@@ -616,10 +689,63 @@ defmodule LangChain.Chains.LLMChain do
     end
   end
 
+  # Run the chain one step at a time. This executes the LLM call, processes
+  # the message, executes any tool calls, and then returns the updated chain.
+  # When should_continue_fn is provided, it loops automatically based on the function.
+  @spec run_step(t(), (t() -> boolean()) | nil) :: {:ok, t()} | {:error, t(), LangChainError.t()}
+  defp run_step(%LLMChain{} = chain, should_continue_fn)
+       when is_function(should_continue_fn, 1) do
+    case run_single_step(chain) do
+      {:ok, updated_chain} ->
+        if should_continue_fn.(updated_chain) do
+          run_step(updated_chain, should_continue_fn)
+        else
+          {:ok, updated_chain}
+        end
+
+      {:error, updated_chain, reason} ->
+        {:error, updated_chain, reason}
+    end
+  end
+
+  defp run_step(%LLMChain{} = chain, _) do
+    run_single_step(chain)
+  end
+
+  @spec run_single_step(t()) :: {:ok, t()} | {:error, t(), LangChainError.t()}
+  defp run_single_step(%LLMChain{} = chain) do
+    chain_after_tools = execute_tool_calls(chain)
+
+    # if no tools were executed, automatically run again
+    if chain_after_tools == chain do
+      do_run(chain_after_tools)
+    else
+      {:ok, chain_after_tools}
+    end
+  end
+
   @doc """
   Run the chain until a specific tool call is made. This makes it easy for an
   LLM to make multiple tool calls and call a specific tool to return a result,
   signaling the end of the operation.
+
+  This function accepts either a single tool name as a string, or a list of tool
+  names. When provided with a list, the chain stops when any one of the specified
+  tools is called.
+
+  ## Examples
+
+  With a single tool name:
+
+      {:ok, %LLMChain{} = updated_chain, %ToolResult{} = tool_result} =
+        chain
+        |> LLMChain.run_until_tool_used("final_summary")
+
+  With multiple tool names:
+
+      {:ok, %LLMChain{} = updated_chain, %ToolResult{} = tool_result} =
+        chain
+        |> LLMChain.run_until_tool_used(["summary_tool", "report_tool"])
 
   ## Options
 
@@ -641,9 +767,16 @@ defmodule LangChain.Chains.LLMChain do
     replaced before running against the configured LLM. This is helpful, for
     example, when a different system prompt is needed for Anthropic vs OpenAI.
   """
-  @spec run_until_tool_used(t(), String.t()) ::
+  @spec run_until_tool_used(t(), [String.t()] | String.t(), Keyword.t()) ::
           {:ok, t(), Message.t()} | {:error, t(), LangChainError.t()}
-  def run_until_tool_used(%LLMChain{} = chain, tool_name, opts \\ []) do
+
+  def run_until_tool_used(chain, tool_name, opts \\ [])
+
+  def run_until_tool_used(%LLMChain{} = chain, tool_name, opts) when is_binary(tool_name) do
+    run_until_tool_used(chain, [tool_name], opts)
+  end
+
+  def run_until_tool_used(%LLMChain{} = chain, tool_names, opts) do
     chain
     |> raise_when_no_messages()
     |> initial_run_logging()
@@ -652,19 +785,30 @@ defmodule LangChain.Chains.LLMChain do
     chain = clear_exchanged_messages(chain)
 
     # Check if the tool_name exists in the registered tools
-    if Map.has_key?(chain._tool_map, tool_name) do
-      # Preserve fallback options and max_runs count if set explicitly.
-      do_run_until_tool_used(chain, tool_name, Keyword.put_new(opts, :max_runs, 25))
+    missing_tools =
+      Enum.filter(tool_names, fn tool_name ->
+        !Map.has_key?(chain._tool_map, tool_name)
+      end)
+
+    if Enum.empty?(missing_tools) do
+      do_run_until_tool_used(chain, tool_names, Keyword.put_new(opts, :max_runs, 25))
     else
+      message =
+        if length(missing_tools) > 1 do
+          "Tool names '#{Enum.join(missing_tools, ", ")}' not found in available tools"
+        else
+          "Tool name '#{List.first(missing_tools)}' not found in available tools"
+        end
+
       {:error, chain,
        LangChainError.exception(
          type: "invalid_tool_name",
-         message: "Tool name '#{tool_name}' not found in available tools"
+         message: message
        )}
     end
   end
 
-  defp do_run_until_tool_used(%LLMChain{} = chain, tool_name, opts) do
+  defp do_run_until_tool_used(%LLMChain{} = chain, tool_names, opts) do
     max_runs = Keyword.get(opts, :max_runs)
 
     if max_runs <= 0 do
@@ -715,18 +859,18 @@ defmodule LangChain.Chains.LLMChain do
           # specified name
           case updated_chain.last_message do
             %Message{role: :tool, tool_results: tool_results} when is_list(tool_results) ->
-              matching_call = Enum.find(tool_results, &(&1.name == tool_name))
+              matching_call = Enum.find(tool_results, &(&1.name in tool_names))
 
               if matching_call do
                 {:ok, updated_chain, matching_call}
               else
                 # If no matching tool result found, continue running.
-                do_run_until_tool_used(updated_chain, tool_name, next_opts)
+                do_run_until_tool_used(updated_chain, tool_names, next_opts)
               end
 
             _ ->
               # If no tool results in last message, continue running
-              do_run_until_tool_used(updated_chain, tool_name, next_opts)
+              do_run_until_tool_used(updated_chain, tool_names, next_opts)
           end
 
         {:error, updated_chain, reason} ->
@@ -756,13 +900,23 @@ defmodule LangChain.Chains.LLMChain do
     # wrap and link the model's callbacks.
     use_llm = Utils.rewrap_callbacks_for_model(chain.llm, chain.callbacks, chain)
 
+    # filter out any empty lists in the list of messages.
+    message_response =
+      case module.call(use_llm, chain.messages, chain.tools) do
+        {:ok, messages} when is_list(messages) ->
+          {:ok, Enum.reject(messages, &(&1 == []))}
+
+        non_list_or_error ->
+          non_list_or_error
+      end
+
     # handle and output response
-    case module.call(use_llm, chain.messages, chain.tools) do
+    case message_response do
       {:ok, [%Message{} = message]} ->
         if chain.verbose, do: IO.inspect(message, label: "SINGLE MESSAGE RESPONSE")
         {:ok, process_message(chain, message)}
 
-      {:ok, [%Message{} = message, _others] = messages} ->
+      {:ok, [%Message{} = message | _others] = messages} ->
         if chain.verbose, do: IO.inspect(messages, label: "MULTIPLE MESSAGE RESPONSE")
         # return the list of message responses. Happens when multiple
         # "choices" are returned from LLM by request.
@@ -847,20 +1001,59 @@ defmodule LangChain.Chains.LLMChain do
   end
 
   @doc """
-  Apply a received MessageDelta struct to the chain. The LLMChain tracks the
-  current merged MessageDelta state. When the final delta is received that
+  Apply a list of deltas to the chain. When the final delta is received that
   completes the message, the LLMChain is updated to clear the `delta` and the
-  `last_message` and list of messages are updated.
+  `last_message` and list of messages are updated. The message is processed and
+  fires any registered callbacks.
   """
-  @spec apply_delta(t(), MessageDelta.t() | {:error, LangChainError.t()}) :: t()
-  def apply_delta(%LLMChain{} = chain, %MessageDelta{} = new_delta) do
+  @spec apply_deltas(t(), list()) :: t()
+  def apply_deltas(%LLMChain{} = chain, deltas) when is_list(deltas) do
+    chain
+    |> merge_deltas(deltas)
+    |> delta_to_message_when_complete()
+  end
+
+  @doc """
+  Merge a list of deltas into the chain.
+  """
+  @spec merge_deltas(t(), list()) :: t()
+  def merge_deltas(%LLMChain{} = chain, deltas) do
+    deltas
+    |> List.flatten()
+    |> Enum.reduce(chain, fn d, acc -> merge_delta(acc, d) end)
+  end
+
+  @doc """
+  Merge a received MessageDelta struct into the chain's current delta. The
+  LLMChain tracks the current merged MessageDelta state. This is able to merge
+  in TokenUsage received after the final delta.
+  """
+  @spec merge_delta(t(), MessageDelta.t() | TokenUsage.t() | {:error, LangChainError.t()}) :: t()
+  def merge_delta(%LLMChain{} = chain, %MessageDelta{} = new_delta) do
     merged = MessageDelta.merge_delta(chain.delta, new_delta)
-    delta_to_message_when_complete(%LLMChain{chain | delta: merged})
+    %LLMChain{chain | delta: merged}
+  end
+
+  def merge_delta(%LLMChain{} = chain, %TokenUsage{} = usage) do
+    # OpenAI returns the token usage in a separate chunk after the last delta. We want to merge it into the final delta.
+    fake_delta = MessageDelta.new!(%{role: :assistant, metadata: %{usage: usage}})
+
+    merged = MessageDelta.merge_delta(chain.delta, fake_delta)
+    %LLMChain{chain | delta: merged}
   end
 
   # Handle when the server is overloaded and cancelled the stream on the server side.
-  def apply_delta(%LLMChain{} = chain, {:error, %LangChainError{type: "overloaded"}}) do
+  def merge_delta(%LLMChain{} = chain, {:error, %LangChainError{type: "overloaded"}}) do
     cancel_delta(chain, :cancelled)
+  end
+
+  @doc """
+  Drop the current delta. This is useful when needing to ignore a partial or
+  complete delta because the message may be handled in a different way.
+  """
+  @spec drop_delta(t()) :: t()
+  def drop_delta(%LLMChain{} = chain) do
+    %LLMChain{chain | delta: nil}
   end
 
   @doc """
@@ -889,16 +1082,6 @@ defmodule LangChain.Chains.LLMChain do
   def delta_to_message_when_complete(%LLMChain{} = chain) do
     # either no delta or incomplete
     chain
-  end
-
-  @doc """
-  Apply a list of deltas to the chain.
-  """
-  @spec apply_deltas(t(), list()) :: t()
-  def apply_deltas(%LLMChain{} = chain, deltas) when is_list(deltas) do
-    deltas
-    |> List.flatten()
-    |> Enum.reduce(chain, fn d, acc -> apply_delta(acc, d) end)
   end
 
   # Process an assistant message sequentially through each message processor.
@@ -1158,6 +1341,17 @@ defmodule LangChain.Chains.LLMChain do
         if verbose, do: IO.inspect(function.name, label: "EXECUTING FUNCTION")
 
         case Function.execute(function, call.arguments, context) do
+          {:ok, %ToolResult{} = result} ->
+            # allow the tool execution to return a ToolResult. Just set the
+            # tool_call_id and fallback settings for name and display_text. This
+            # allows the tool to explicitly set the options for the ToolResult.
+            %{
+              result
+              | tool_call_id: call.call_id,
+                name: result.name || function.name,
+                display_text: result.display_text || function.display_text
+            }
+
           {:ok, llm_result, processed_result} ->
             if verbose, do: IO.inspect(processed_result, label: "FUNCTION PROCESSED RESULT")
             # successful execution and storage of processed_content.

@@ -399,7 +399,9 @@ defmodule LangChain.ChatModels.ChatMistralAI do
     req
     |> Req.post()
     |> case do
-      {:ok, %Req.Response{body: data} = _response} ->
+      {:ok, %Req.Response{body: data} = response} ->
+        Callbacks.fire(mistralai.callbacks, :on_llm_response_headers, [response.headers])
+
         Callbacks.fire(mistralai.callbacks, :on_llm_token_usage, [
           get_token_usage(data)
         ])
@@ -469,7 +471,9 @@ defmodule LangChain.ChatModels.ChatMistralAI do
         )
     )
     |> case do
-      {:ok, %Req.Response{body: data} = _response} ->
+      {:ok, %Req.Response{body: data} = response} ->
+        Callbacks.fire(mistralai.callbacks, :on_llm_response_headers, [response.headers])
+
         data
 
       {:error, %Req.TransportError{reason: :timeout} = err} ->
@@ -704,6 +708,20 @@ defmodule LangChain.ChatModels.ChatMistralAI do
   end
 
   defp get_token_usage(_response_body), do: nil
+
+  @doc """
+  Determine if an error should be retried. If `true`, a fallback LLM may be
+  used. If `false`, the error is understood to be more fundamental with the
+  request rather than a service issue and it should not be retried or fallback
+  to another service.
+  """
+  @impl ChatModel
+  @spec retry_on_fallback?(LangChainError.t()) :: boolean()
+  def retry_on_fallback?(%LangChainError{type: "rate_limited"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "rate_limit_exceeded"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "timeout"}), do: true
+  def retry_on_fallback?(%LangChainError{type: "too_many_requests"}), do: true
+  def retry_on_fallback?(_), do: false
 
   @doc """
   Generate a config map that can later restore the model's configuration.

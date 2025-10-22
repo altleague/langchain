@@ -14,7 +14,7 @@ defmodule LangChain.Chains.ChainCallbacks do
 
       my_handlers = %{
         on_llm_new_message: fn _chain, new_message -> send(live_view_pid, {:received_message, new_message}) end,
-        on_llm_new_delta: fn _chain, new_delta -> send(live_view_pid, {:received_delta, new_delta}) end,
+        on_llm_new_delta: fn _chain, new_deltas -> send(live_view_pid, {:received_delta, new_deltas}) end,
         on_error_message_created: fn _chain, new_message -> send(live_view_pid, {:received_message, new_message}) end
       }
 
@@ -49,7 +49,7 @@ defmodule LangChain.Chains.ChainCallbacks do
         IO.write(delta)
       end
   """
-  @type llm_new_delta :: (LLMChain.t(), MessageDelta.t() -> any())
+  @type llm_new_delta :: (LLMChain.t(), [MessageDelta.t()] -> any())
 
   @typedoc """
   Executed when an LLM is not streaming and a full message was received.
@@ -100,6 +100,27 @@ defmodule LangChain.Chains.ChainCallbacks do
       end
   """
   @type llm_token_usage :: (LLMChain.t(), TokenUsage.t() -> any())
+
+  @typedoc """
+  Executed when an LLM response is received through an HTTP response. The entire
+  set of raw response headers can be received and processed.
+
+  The return value is discarded.
+
+  ## Example
+
+  A function declaration that matches the signature.
+
+      def handle_llm_response_headers(chain, response_headers) do
+        # This demonstrates how to send the response headers to a
+        # LiveView assuming the LiveView's pid was stored in the chain's
+        # custom_context.
+        send(chain.custom_context.live_view_pid, {:req_response_headers, response_headers})
+
+        IO.inspect(response_headers)
+      end
+  """
+  @type llm_response_headers :: (LLMChain.t(), response_headers :: map() -> any())
 
   @typedoc """
   Executed when an LLMChain has completed processing a received assistant
@@ -191,6 +212,7 @@ defmodule LangChain.Chains.ChainCallbacks do
           optional(:on_llm_new_message) => llm_new_message(),
           optional(:on_llm_ratelimit_info) => llm_ratelimit_info(),
           optional(:on_llm_token_usage) => llm_token_usage(),
+          optional(:on_llm_response_headers) => llm_response_headers(),
 
           # Chain-level callbacks
           optional(:on_message_processed) => chain_message_processed(),

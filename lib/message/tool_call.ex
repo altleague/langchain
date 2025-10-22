@@ -209,6 +209,14 @@ defmodule LangChain.Message.ToolCall do
     primary
   end
 
+  defp append_arguments(%ToolCall{status: :incomplete} = primary, %ToolCall{
+         status: :complete,
+         arguments: new_arguments
+       })
+       when is_map(new_arguments) do
+    %ToolCall{primary | arguments: new_arguments}
+  end
+
   defp append_arguments(%ToolCall{} = primary, %ToolCall{
          arguments: new_arguments
        })
