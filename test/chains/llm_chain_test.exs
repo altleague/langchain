@@ -881,7 +881,7 @@ defmodule LangChain.Chains.LLMChainTest do
 
   describe "process_message/2" do
     test "runs message processors, adds to chain, fires callbacks on final message", %{
-      chain: chain
+      chain: %LLMChain{} = chain
     } do
       handler = %{
         on_message_processed: fn _chain, %Message{} = message ->
@@ -2006,7 +2006,7 @@ defmodule LangChain.Chains.LLMChainTest do
           with_fallbacks: [
             ChatAnthropic.new!(%{stream: false})
           ],
-          before_fallback: fn chain ->
+          before_fallback: fn %LLMChain{} = chain ->
             send(self(), :before_fallback_fired)
 
             case chain.llm do
@@ -2262,6 +2262,7 @@ defmodule LangChain.Chains.LLMChainTest do
          } do
       test_pid = self()
 
+      # verifies that on_message_processed also receives tool result responses
       handler = %{
         on_message_processed: fn _chain, tool_msg ->
           send(test_pid, {:message_processed_callback_fired, tool_msg})
